@@ -150,24 +150,33 @@ class BootstrapScoringService:
         freshness = _clamp(10 - (snapshot.age_minutes / 36))
         liquidity = _clamp(snapshot.liquidity_usd / 30_000)
         holder_growth = _clamp(snapshot.holder_growth_1h / 20)
-        return (freshness * 0.35) + (liquidity * 0.25) + (holder_growth * 0.20) + (
-            (10 - risk_score) * 0.20
+        return (
+            (freshness * 0.35)
+            + (liquidity * 0.25)
+            + (holder_growth * 0.20)
+            + ((10 - risk_score) * 0.20)
         )
 
     def _safer_momentum_score(self, snapshot: TokenSnapshot, risk_score: float) -> float:
         liquidity = _clamp(snapshot.liquidity_usd / 40_000)
         acceleration = _clamp(snapshot.volume_acceleration * 1.7)
         buyers = _clamp((snapshot.net_buyer_ratio + 1) * 5)
-        return (liquidity * 0.30) + (acceleration * 0.35) + (buyers * 0.20) + (
-            (10 - risk_score) * 0.15
+        return (
+            (liquidity * 0.30)
+            + (acceleration * 0.35)
+            + (buyers * 0.20)
+            + ((10 - risk_score) * 0.15)
         )
 
     def _high_greed_score(self, snapshot: TokenSnapshot, risk_score: float) -> float:
         acceleration = _clamp(snapshot.volume_acceleration * 2.0)
         trade_heat = _clamp(snapshot.buy_count_15m / 12)
         degen_bonus = _clamp(risk_score)
-        return (acceleration * 0.45) + (trade_heat * 0.30) + (degen_bonus * 0.15) + (
-            _clamp(snapshot.liquidity_usd / 60_000) * 0.10
+        return (
+            (acceleration * 0.45)
+            + (trade_heat * 0.30)
+            + (degen_bonus * 0.15)
+            + (_clamp(snapshot.liquidity_usd / 60_000) * 0.10)
         )
 
     def _risk_score(self, snapshot: TokenSnapshot) -> float:
