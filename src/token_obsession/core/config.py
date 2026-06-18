@@ -17,6 +17,12 @@ class Settings(BaseSettings):
     default_chain: str = "base"
     fresh_window_hours: int = 6
     min_liquidity_usd: float = Field(default=15000.0, ge=0)
+    coingecko_api_key: str | None = None
+    coingecko_base_url: str = "https://pro-api.coingecko.com/api/v3"
+    coingecko_timeout_seconds: float = Field(default=10.0, gt=0)
+    coingecko_max_pages: int = Field(default=2, ge=1, le=10)
+    dexscreener_base_url: str = "https://api.dexscreener.com"
+    dexscreener_timeout_seconds: float = Field(default=10.0, gt=0)
 
     model_config = SettingsConfigDict(
         env_prefix="TOKEN_OBSESSION_",

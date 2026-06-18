@@ -10,10 +10,10 @@ from token_obsession.core.models import (
     Opportunity,
     Strategy,
 )
-from token_obsession.services.scoring import BootstrapScoringService
+from token_obsession.services.scoring import TokenScoringService
 
 settings = get_settings()
-scoring_service = BootstrapScoringService(settings=settings)
+scoring_service = TokenScoringService(settings=settings)
 
 mcp = FastMCP(
     name="token-obsession",
@@ -54,4 +54,7 @@ def compare_tokens(
 ) -> CompareTokensResult:
     """Compare several Base token candidates under one strategy."""
 
-    return scoring_service.compare_tokens(token_addresses=token_addresses, strategy=strategy)
+    return scoring_service.compare_tokens(
+        token_addresses=token_addresses,
+        strategy=strategy,
+    )

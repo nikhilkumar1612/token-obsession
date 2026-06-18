@@ -1,4 +1,4 @@
-"""Core domain models for the bootstrap ranking engine."""
+"""Core domain models for the scoring engine."""
 
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ class TokenSnapshot(BaseModel):
     """Canonical snapshot used by the scoring layer."""
 
     chain: Chain = Chain.BASE
+    data_source: str = "bootstrap"
     token_address: str
     pool_address: str
     symbol: str
@@ -57,6 +58,7 @@ class Opportunity(BaseModel):
 
     chain: Chain
     strategy: Strategy
+    data_source: str
     token_address: str
     pool_address: str
     symbol: str
