@@ -19,6 +19,7 @@ class Strategy(StrEnum):
 
     FRESH_QUALITY = "fresh_quality"
     SAFER_MOMENTUM = "safer_momentum"
+    ESTABLISHED_TRENDING_24H = "established_trending_24h"
     HIGH_GREED_HIGH_RISK = "high_greed_high_risk"
 
 

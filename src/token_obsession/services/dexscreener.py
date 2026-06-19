@@ -34,11 +34,9 @@ class DexScreenerClient:
         unique_addresses = list(dict.fromkeys(token_addresses))
         pairs: list[dict[str, Any]] = []
         for chunk_start in range(0, len(unique_addresses), self.max_addresses_per_request):
-            chunk = unique_addresses[
-                chunk_start: chunk_start + self.max_addresses_per_request
-            ]
-            token_path = ','.join(chunk)
-            payload = self._get(f'/tokens/v1/{chain_id}/{token_path}')
+            chunk = unique_addresses[chunk_start : chunk_start + self.max_addresses_per_request]
+            token_path = ",".join(chunk)
+            payload = self._get(f"/tokens/v1/{chain_id}/{token_path}")
             pairs.extend(item for item in payload if isinstance(item, dict))
         return pairs
 
@@ -52,10 +50,10 @@ class DexScreenerClient:
                 response.raise_for_status()
             except httpx.HTTPError as exc:
                 raise DexScreenerClientError(
-                    f'DEX Screener request failed for {path}: {exc}',
+                    f"DEX Screener request failed for {path}: {exc}",
                 ) from exc
 
         payload = response.json()
         if not isinstance(payload, list):
-            raise DexScreenerClientError('Unexpected DEX Screener response shape.')
+            raise DexScreenerClientError("Unexpected DEX Screener response shape.")
         return payload

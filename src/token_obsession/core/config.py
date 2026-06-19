@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     coingecko_max_pages: int = Field(default=2, ge=1, le=10)
     dexscreener_base_url: str = "https://api.dexscreener.com"
     dexscreener_timeout_seconds: float = Field(default=10.0, gt=0)
+    birdeye_api_key: str | None = None
+    birdeye_base_url: str = "https://public-api.birdeye.so"
+    birdeye_timeout_seconds: float = Field(default=10.0, gt=0)
+    birdeye_max_trending_tokens: int = Field(default=20, ge=1, le=20)
 
     model_config = SettingsConfigDict(
         env_prefix="TOKEN_OBSESSION_",

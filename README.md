@@ -8,12 +8,14 @@ This project currently gives us:
 
 - a Python package managed by `uv`
 - a FastAPI app that hosts a remote MCP server over Streamable HTTP
-- three initial ranking strategies:
+- four initial ranking strategies:
   - `fresh_quality`
   - `safer_momentum`
+  - `established_trending_24h`
   - `high_greed_high_risk`
 - GeckoTerminal-backed discovery for Base when a CoinGecko API key is configured
 - DEX Screener enrichment for liquidity, pair activity, and boost context
+- Birdeye trending confirmation and backfill when a Birdeye API key is configured
 - placeholder in-memory token data and scoring as a fallback when no live API key is set
 
 ## Quickstart
@@ -24,10 +26,11 @@ This project currently gives us:
 uv sync
 ```
 
-2. If you want live GeckoTerminal data, set your API key:
+2. If you want live provider data, set one or both API keys:
 
 ```bash
 export TOKEN_OBSESSION_COINGECKO_API_KEY=your_key_here
+export TOKEN_OBSESSION_BIRDEYE_API_KEY=your_key_here
 ```
 
 If you are using a CoinGecko Demo key, also set:

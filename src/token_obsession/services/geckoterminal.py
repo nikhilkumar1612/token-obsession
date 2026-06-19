@@ -74,9 +74,9 @@ class GeckoTerminalClient:
     def _auth_header_name(self) -> str:
         """Return the correct auth header for the configured CoinGecko host."""
 
-        if 'pro-api.coingecko.com' in self._settings.coingecko_base_url:
-            return 'x-cg-pro-api-key'
-        return 'x-cg-demo-api-key'
+        if "pro-api.coingecko.com" in self._settings.coingecko_base_url:
+            return "x-cg-pro-api-key"
+        return "x-cg-demo-api-key"
 
     def _get(
         self,
