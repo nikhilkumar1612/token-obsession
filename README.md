@@ -1,3 +1,5 @@
+![token-obsession banner](assets/readme-banner-hero.png)
+
 # token-obsession
 
 `token-obsession` is a Base-first MCP server for ranked token discovery.
