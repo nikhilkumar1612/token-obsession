@@ -34,6 +34,7 @@ class TokenSnapshot(BaseModel):
     name: str
     first_seen_at: datetime
     liquidity_usd: float = Field(ge=0)
+    price_usd: float | None = Field(default=None, ge=0)
     volume_15m_usd: float = Field(ge=0)
     volume_1h_usd: float = Field(ge=0)
     volume_acceleration: float = Field(ge=0)
@@ -66,6 +67,7 @@ class Opportunity(BaseModel):
     name: str
     age_minutes: int
     liquidity_usd: float
+    price_usd: float | None = Field(default=None, ge=0)
     volume_15m_usd: float
     volume_1h_usd: float
     volume_acceleration: float

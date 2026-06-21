@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import httpx
@@ -17,6 +18,7 @@ class DexScreenerClient:
     """Client for token pair lookups on DEX Screener."""
 
     max_addresses_per_request = 30
+    max_parallel_requests = 4
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -32,11 +34,21 @@ class DexScreenerClient:
             return []
 
         unique_addresses = list(dict.fromkeys(token_addresses))
-        pairs: list[dict[str, Any]] = []
+        request_paths = []
         for chunk_start in range(0, len(unique_addresses), self.max_addresses_per_request):
             chunk = unique_addresses[chunk_start : chunk_start + self.max_addresses_per_request]
             token_path = ",".join(chunk)
-            payload = self._get(f"/tokens/v1/{chain_id}/{token_path}")
+            request_paths.append(f"/tokens/v1/{chain_id}/{token_path}")
+
+        if len(request_paths) == 1:
+            payloads = [self._get(request_paths[0])]
+        else:
+            max_workers = min(len(request_paths), self.max_parallel_requests)
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                payloads = list(executor.map(self._get, request_paths))
+
+        pairs: list[dict[str, Any]] = []
+        for payload in payloads:
             pairs.extend(item for item in payload if isinstance(item, dict))
         return pairs
 

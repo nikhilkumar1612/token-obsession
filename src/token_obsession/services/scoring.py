@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -184,12 +185,23 @@ class TokenScoringService:
 
     def _fetch_live_snapshots(self, strategy: Strategy) -> list[TokenSnapshot]:
         snapshots: list[TokenSnapshot] = []
+        birdeye_future: Future[dict[str, dict[str, Any]]] | None = None
 
-        try:
-            responses, data_source = self._gecko_responses_for_strategy(strategy=strategy)
-        except GeckoTerminalClientError:
-            responses = []
-            data_source = ""
+        with ThreadPoolExecutor(max_workers=self._scan_provider_worker_count()) as executor:
+            if self.settings.birdeye_api_key:
+                birdeye_future = executor.submit(
+                    self._birdeye_tokens_for_strategy,
+                    strategy,
+                )
+
+            try:
+                responses, data_source = self._gecko_responses_for_strategy(
+                    strategy=strategy,
+                    executor=executor,
+                )
+            except GeckoTerminalClientError:
+                responses = []
+                data_source = ""
 
         seen_tokens: set[str] = set()
         for response in responses:
@@ -209,61 +221,63 @@ class TokenScoringService:
         except DexScreenerClientError:
             pass
 
+        if birdeye_future is None:
+            return snapshots
+
         try:
-            return self._enrich_with_birdeye(snapshots=snapshots, strategy=strategy)
+            birdeye_tokens = birdeye_future.result()
+            return self._merge_birdeye_tokens(
+                snapshots=snapshots,
+                strategy=strategy,
+                birdeye_tokens=birdeye_tokens,
+            )
         except (BirdeyeClientError, DexScreenerClientError):
             return snapshots
 
     def _gecko_responses_for_strategy(
         self,
         strategy: Strategy,
+        executor: ThreadPoolExecutor | None = None,
     ) -> tuple[list[dict[str, Any]], str]:
         if strategy == Strategy.FRESH_QUALITY:
-            return (
-                [
-                    self._gecko_client.get_new_pools(
-                        network=Chain.BASE.value,
-                        page=page,
-                    )
-                    for page in range(1, self.settings.coingecko_max_pages + 1)
-                ],
-                "coingecko_new_pools",
-            )
-        if strategy == Strategy.SAFER_MOMENTUM:
-            return (
-                [
-                    self._gecko_client.get_trending_pools(
-                        network=Chain.BASE.value,
-                        duration="1h",
-                        page=page,
-                    )
-                    for page in range(1, self.settings.coingecko_max_pages + 1)
-                ],
-                "coingecko_trending_1h",
-            )
-        if strategy == Strategy.ESTABLISHED_TRENDING_24H:
-            return (
-                [
-                    self._gecko_client.get_trending_pools(
-                        network=Chain.BASE.value,
-                        duration="1h",
-                        page=page,
-                    )
-                    for page in range(1, self.settings.coingecko_max_pages + 1)
-                ],
-                "coingecko_trending_1h",
-            )
-        return (
-            [
-                self._gecko_client.get_trending_pools(
+            data_source = "coingecko_new_pools"
+
+            def fetch_page(page: int) -> dict[str, Any]:
+                return self._gecko_client.get_new_pools(
+                    network=Chain.BASE.value,
+                    page=page,
+                )
+
+        elif strategy in {
+            Strategy.SAFER_MOMENTUM,
+            Strategy.ESTABLISHED_TRENDING_24H,
+        }:
+            data_source = "coingecko_trending_1h"
+
+            def fetch_page(page: int) -> dict[str, Any]:
+                return self._gecko_client.get_trending_pools(
+                    network=Chain.BASE.value,
+                    duration="1h",
+                    page=page,
+                )
+
+        else:
+            data_source = "coingecko_trending_5m"
+
+            def fetch_page(page: int) -> dict[str, Any]:
+                return self._gecko_client.get_trending_pools(
                     network=Chain.BASE.value,
                     duration="5m",
                     page=page,
                 )
-                for page in range(1, self.settings.coingecko_max_pages + 1)
-            ],
-            "coingecko_trending_5m",
-        )
+
+        pages = list(range(1, self.settings.coingecko_max_pages + 1))
+        if executor is None or len(pages) == 1:
+            return ([fetch_page(page) for page in pages], data_source)
+
+        futures = {page: executor.submit(fetch_page, page) for page in pages}
+        responses = [futures[page].result() for page in pages]
+        return responses, data_source
 
     def _fetch_snapshot_by_token(
         self,
@@ -355,6 +369,7 @@ class TokenScoringService:
                     name=name,
                     first_seen_at=created_at,
                     liquidity_usd=max(reserve_in_usd, 0.0),
+                    price_usd=self._price_from_gecko_pool(attributes),
                     volume_15m_usd=volume_15m_usd,
                     volume_1h_usd=volume_1h_usd,
                     volume_acceleration=self._volume_acceleration(
@@ -404,6 +419,17 @@ class TokenScoringService:
         if not self.settings.birdeye_api_key:
             return snapshots
 
+        birdeye_tokens = self._birdeye_tokens_for_strategy(strategy=strategy)
+        return self._merge_birdeye_tokens(
+            snapshots=snapshots,
+            strategy=strategy,
+            birdeye_tokens=birdeye_tokens,
+        )
+
+    def _birdeye_tokens_for_strategy(
+        self,
+        strategy: Strategy,
+    ) -> dict[str, dict[str, Any]]:
         sort_by, sort_type = self._birdeye_sort_config(strategy=strategy)
         response = self._birdeye_client.get_trending_tokens(
             chain=Chain.BASE.value,
@@ -411,7 +437,14 @@ class TokenScoringService:
             sort_type=sort_type,
             limit=self.settings.birdeye_max_trending_tokens,
         )
-        birdeye_tokens = self._normalize_birdeye_trending(response)
+        return self._normalize_birdeye_trending(response)
+
+    def _merge_birdeye_tokens(
+        self,
+        snapshots: list[TokenSnapshot],
+        strategy: Strategy,
+        birdeye_tokens: dict[str, dict[str, Any]],
+    ) -> list[TokenSnapshot]:
         if not birdeye_tokens:
             return snapshots
 
@@ -520,6 +553,8 @@ class TokenScoringService:
             snapshot.liquidity_usd,
             self._to_float(pair.get("liquidity", {}).get("usd")),
         )
+        dex_price_usd = self._to_float(pair.get("priceUsd"))
+        price_usd = dex_price_usd if dex_price_usd > 0 else snapshot.price_usd
         volume_15m_usd = snapshot.volume_15m_usd
         volume_1h_usd = max(
             snapshot.volume_1h_usd,
@@ -571,6 +606,7 @@ class TokenScoringService:
             name=snapshot.name,
             first_seen_at=first_seen_at,
             liquidity_usd=liquidity_usd,
+            price_usd=price_usd,
             volume_15m_usd=volume_15m_usd,
             volume_1h_usd=volume_1h_usd,
             volume_acceleration=self._volume_acceleration(
@@ -595,6 +631,10 @@ class TokenScoringService:
             snapshot.liquidity_usd,
             self._to_float(birdeye_token.get("liquidity")),
         )
+        birdeye_price_usd = self._first_positive_float(
+            birdeye_token.get("priceUsd"),
+            birdeye_token.get("price"),
+        )
         return TokenSnapshot(
             chain=snapshot.chain,
             data_source=f"{snapshot.data_source}+birdeye_trending",
@@ -604,6 +644,7 @@ class TokenScoringService:
             name=snapshot.name,
             first_seen_at=snapshot.first_seen_at,
             liquidity_usd=liquidity_usd,
+            price_usd=birdeye_price_usd or snapshot.price_usd,
             volume_15m_usd=snapshot.volume_15m_usd,
             volume_1h_usd=snapshot.volume_1h_usd,
             volume_acceleration=snapshot.volume_acceleration,
@@ -627,6 +668,7 @@ class TokenScoringService:
         symbol = str(base_token.get("symbol") or "")
         name = str(base_token.get("name") or "")
         liquidity_usd = self._to_float(pair.get("liquidity", {}).get("usd"))
+        price_usd = self._first_positive_float(pair.get("priceUsd"))
         volume_h1_usd = self._to_float(pair.get("volume", {}).get("h1"))
         m5_volume = self._to_float(pair.get("volume", {}).get("m5"))
         volume_15m_usd = m5_volume * 3 if m5_volume > 0 else 0.0
@@ -662,6 +704,7 @@ class TokenScoringService:
             name=name,
             first_seen_at=first_seen_at,
             liquidity_usd=liquidity_usd,
+            price_usd=price_usd,
             volume_15m_usd=volume_15m_usd,
             volume_1h_usd=volume_h1_usd,
             volume_acceleration=self._volume_acceleration(
@@ -761,6 +804,7 @@ class TokenScoringService:
             name=snapshot.name,
             age_minutes=snapshot.age_minutes,
             liquidity_usd=snapshot.liquidity_usd,
+            price_usd=snapshot.price_usd,
             volume_15m_usd=snapshot.volume_15m_usd,
             volume_1h_usd=snapshot.volume_1h_usd,
             volume_acceleration=snapshot.volume_acceleration,
@@ -948,6 +992,25 @@ class TokenScoringService:
                 source_count=2,
             ),
         ]
+
+    def _price_from_gecko_pool(
+        self,
+        attributes: dict[str, Any],
+    ) -> float | None:
+        return self._first_positive_float(
+            attributes.get("base_token_price_usd"),
+            attributes.get("price_in_usd"),
+        )
+
+    def _scan_provider_worker_count(self) -> int:
+        return max(1, self.settings.coingecko_max_pages + int(bool(self.settings.birdeye_api_key)))
+
+    def _first_positive_float(self, *raw_values: Any) -> float | None:
+        for raw_value in raw_values:
+            value = self._to_float(raw_value)
+            if value > 0:
+                return value
+        return None
 
     def _core_quote_symbols(self) -> set[str]:
         return {"WETH", "USDC", "cbBTC"}

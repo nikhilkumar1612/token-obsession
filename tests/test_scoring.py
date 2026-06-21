@@ -110,6 +110,7 @@ class FakeDexClient:
                 },
                 "volume": {"m5": 5000, "h1": 65000},
                 "liquidity": {"usd": 150000},
+                "priceUsd": "0.42",
                 "pairCreatedAt": created_at_ms,
                 "boosts": {"active": 2},
             }
@@ -158,6 +159,7 @@ class FakeBirdeyeClient:
                     {
                         "address": "0xface",
                         "liquidity": 220000,
+                        "priceUsd": 0.48,
                         "name": "Face Token",
                         "symbol": "FACE",
                         "volume24hUSD": 910000,
@@ -232,6 +234,7 @@ def test_fresh_quality_is_enriched_by_dexscreener() -> None:
     assert ranked[0].data_source == "coingecko_new_pools+dexscreener_token_pairs"
     assert ranked[0].source_count == 2
     assert ranked[0].liquidity_usd == 150000.0
+    assert ranked[0].price_usd == 0.42
     assert "DEX Screener shows 2 active boosts." in ranked[0].warnings
 
 
@@ -252,6 +255,7 @@ def test_fresh_quality_is_enriched_by_birdeye() -> None:
     assert ranked[0].data_source == "coingecko_new_pools+dexscreener_token_pairs+birdeye_trending"
     assert ranked[0].source_count == 3
     assert ranked[0].liquidity_usd == 220000.0
+    assert ranked[0].price_usd == 0.48
     assert "Birdeye trending flow also picked up this token on Base." in ranked[0].reasons
 
 
