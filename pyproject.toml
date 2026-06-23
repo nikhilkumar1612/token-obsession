@@ -9,8 +9,12 @@ dependencies = [
   "httpx>=0.28.0,<1.0.0",
   "mcp[cli]>=1.27,<2",
   "pydantic-settings>=2.10.0,<3.0.0",
+  "safe-eth-py>=7.21.0",
   "uvicorn[standard]>=0.35.0,<1.0.0",
 ]
+
+[project.scripts]
+token-obsession-sell-worker = "token_obsession.workers.sell_monitor:main"
 
 [dependency-groups]
 dev = [

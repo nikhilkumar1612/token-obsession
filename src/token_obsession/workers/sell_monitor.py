@@ -1,0 +1,271 @@
+"""Scheduled worker that evaluates positions and proposes Safe sell transactions."""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import time
+from datetime import UTC, datetime, timedelta
+
+from token_obsession.core.config import Settings, get_settings
+from token_obsession.core.models import (
+    SellEvaluationConfig,
+    SellProposalStatus,
+    SellRecommendation,
+    SellWorkerPositionResult,
+    SellWorkerResultStatus,
+    SellWorkerRunReport,
+)
+from token_obsession.services.positions import PositionStore
+from token_obsession.services.safe_sell import SafeSellProposalService
+from token_obsession.services.sell_evaluation import SellEvaluationService
+from token_obsession.services.sell_proposals import SellProposalStore
+
+logger = logging.getLogger(__name__)
+
+
+class SellMonitorWorker:
+    """Evaluate open positions and publish deduplicated Safe sell proposals."""
+
+    def __init__(
+        self,
+        settings: Settings,
+        position_store: PositionStore | None = None,
+        evaluation_service: SellEvaluationService | None = None,
+        proposal_service: SafeSellProposalService | None = None,
+        proposal_store: SellProposalStore | None = None,
+    ) -> None:
+        self._settings = settings
+        self._position_store = position_store or PositionStore(settings=settings)
+        self._evaluation_service = evaluation_service or SellEvaluationService(settings=settings)
+        self._proposal_service = proposal_service or SafeSellProposalService(settings=settings)
+        self._proposal_store = proposal_store or SellProposalStore(settings=settings)
+
+    def run_once(self) -> SellWorkerRunReport:
+        """Run one complete reconciliation and sell-evaluation pass."""
+
+        started_at = datetime.now(UTC)
+        self._reconcile_pending_proposals()
+        positions = self._position_store.list_positions()
+        config = self._evaluation_config()
+        evaluation_report = self._evaluation_service.evaluate_open_positions(
+            positions=positions,
+            config=config,
+        )
+        positions_by_id = {position.position_id: position for position in positions}
+        results: list[SellWorkerPositionResult] = []
+
+        for evaluation in evaluation_report.positions:
+            position = positions_by_id[evaluation.position_id]
+            if evaluation.recommendation != SellRecommendation.SELL:
+                results.append(
+                    SellWorkerPositionResult(
+                        position_id=position.position_id,
+                        symbol=position.symbol,
+                        recommendation=evaluation.recommendation,
+                        status=SellWorkerResultStatus.NO_ACTION,
+                        message="Sell rules did not trigger.",
+                    )
+                )
+                continue
+
+            pending = self._proposal_store.pending_for_position(position.position_id)
+            if pending is not None:
+                results.append(
+                    SellWorkerPositionResult(
+                        position_id=position.position_id,
+                        symbol=position.symbol,
+                        recommendation=evaluation.recommendation,
+                        status=SellWorkerResultStatus.ALREADY_PENDING,
+                        message="A Safe sell proposal is already pending.",
+                        safe_tx_hash=pending.safe_tx_hash,
+                    )
+                )
+                continue
+
+            if self._in_reproposal_cooldown(position.position_id):
+                results.append(
+                    SellWorkerPositionResult(
+                        position_id=position.position_id,
+                        symbol=position.symbol,
+                        recommendation=evaluation.recommendation,
+                        status=SellWorkerResultStatus.COOLDOWN,
+                        message="A failed or superseded proposal is still in cooldown.",
+                    )
+                )
+                continue
+
+            try:
+                proposal = self._proposal_service.propose_position_sell(position)
+                self._proposal_store.add(proposal)
+            except Exception as exc:
+                logger.exception(
+                    "SELL ACTION REQUIRED | token=%s | position_id=%s | "
+                    "recommendation=SELL | Safe transaction build/proposal failed: %s",
+                    position.symbol,
+                    position.position_id,
+                    exc,
+                )
+                results.append(
+                    SellWorkerPositionResult(
+                        position_id=position.position_id,
+                        symbol=position.symbol,
+                        recommendation=evaluation.recommendation,
+                        status=SellWorkerResultStatus.ERROR,
+                        message=str(exc),
+                    )
+                )
+                continue
+
+            logger.warning(
+                "SAFE SELL PROPOSAL CREATED | token=%s | position_id=%s | safe_tx_hash=%s",
+                position.symbol,
+                position.position_id,
+                proposal.safe_tx_hash,
+            )
+            results.append(
+                SellWorkerPositionResult(
+                    position_id=position.position_id,
+                    symbol=position.symbol,
+                    recommendation=evaluation.recommendation,
+                    status=SellWorkerResultStatus.PROPOSED,
+                    message="Safe sell proposal created.",
+                    safe_tx_hash=proposal.safe_tx_hash,
+                )
+            )
+
+        completed_at = datetime.now(UTC)
+        report = SellWorkerRunReport(
+            started_at=started_at,
+            completed_at=completed_at,
+            positions_checked=len(positions),
+            results=results,
+        )
+        logger.info(
+            "Sell worker completed | positions=%d | duration_seconds=%.2f",
+            report.positions_checked,
+            (completed_at - started_at).total_seconds(),
+        )
+        return report
+
+    def _reconcile_pending_proposals(self) -> None:
+        pending_proposals = [
+            proposal
+            for proposal in self._proposal_store.list()
+            if proposal.status == SellProposalStatus.PENDING
+        ]
+        for proposal in pending_proposals:
+            try:
+                chain_status = self._proposal_service.get_proposal_status(proposal)
+                if chain_status.status == SellProposalStatus.PENDING:
+                    continue
+                updated = self._proposal_store.update_status(
+                    proposal_id=proposal.proposal_id,
+                    status=chain_status.status,
+                    execution_tx_hash=chain_status.execution_tx_hash,
+                    failure_reason=chain_status.failure_reason,
+                )
+                if updated.status == SellProposalStatus.EXECUTED:
+                    self._position_store.close_position(
+                        position_id=updated.position_id,
+                        close_reason=(
+                            "Safe sell executed"
+                            + (
+                                f": {updated.execution_tx_hash}"
+                                if updated.execution_tx_hash
+                                else ""
+                            )
+                        ),
+                    )
+                    logger.warning(
+                        "SAFE SELL EXECUTED | token=%s | position_id=%s | tx_hash=%s",
+                        updated.symbol,
+                        updated.position_id,
+                        updated.execution_tx_hash,
+                    )
+                else:
+                    logger.error(
+                        "SELL ACTION REQUIRED | token=%s | position_id=%s | "
+                        "proposal_status=%s | reason=%s",
+                        updated.symbol,
+                        updated.position_id,
+                        updated.status.value,
+                        updated.failure_reason,
+                    )
+            except Exception as exc:
+                logger.exception(
+                    "SELL ACTION REQUIRED | token=%s | position_id=%s | "
+                    "proposal reconciliation failed: %s",
+                    proposal.symbol,
+                    proposal.position_id,
+                    exc,
+                )
+
+    def _in_reproposal_cooldown(self, position_id: str) -> bool:
+        latest = self._proposal_store.latest_for_position(position_id)
+        if latest is None or latest.status not in {
+            SellProposalStatus.FAILED,
+            SellProposalStatus.SUPERSEDED,
+        }:
+            return False
+        cooldown = timedelta(minutes=self._settings.sell_reproposal_cooldown_minutes)
+        return datetime.now(UTC) < latest.updated_at + cooldown
+
+    def _evaluation_config(self) -> SellEvaluationConfig:
+        return SellEvaluationConfig(
+            take_profit_percent=self._settings.sell_take_profit_percent,
+            stop_loss_percent=self._settings.sell_stop_loss_percent,
+            price_drop_percent=self._settings.sell_price_drop_percent,
+            price_change_window=self._settings.sell_price_change_window,
+            volume_drop_percent=self._settings.sell_volume_drop_percent,
+            volume_comparison_window=self._settings.sell_volume_comparison_window,
+            minimum_market_signals_for_sell=(self._settings.sell_minimum_market_signals),
+        )
+
+
+def build_worker(settings: Settings | None = None) -> SellMonitorWorker:
+    """Build the production sell worker from environment-backed settings."""
+
+    return SellMonitorWorker(settings=settings or get_settings())
+
+
+def main() -> None:
+    """Run the sell monitor once or continuously at the configured interval."""
+
+    parser = argparse.ArgumentParser(description="Monitor positions for Safe sell signals.")
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Run one monitoring pass and exit.",
+    )
+    parser.add_argument(
+        "--interval-minutes",
+        type=int,
+        default=None,
+        help="Override TOKEN_OBSESSION_SELL_CHECK_INTERVAL_MINUTES.",
+    )
+    args = parser.parse_args()
+    settings = get_settings()
+    interval_minutes = args.interval_minutes or settings.sell_check_interval_minutes
+    if interval_minutes < 1:
+        parser.error("--interval-minutes must be at least 1")
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    worker = build_worker(settings=settings)
+    while True:
+        worker.run_once()
+        if args.once:
+            return
+        logger.info("Next sell check in %d minutes.", interval_minutes)
+        try:
+            time.sleep(interval_minutes * 60)
+        except KeyboardInterrupt:
+            logger.info("Sell worker stopped.")
+            return
+
+
+if __name__ == "__main__":
+    main()
