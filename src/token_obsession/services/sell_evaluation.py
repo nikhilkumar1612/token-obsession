@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from typing import Any
 
@@ -19,6 +20,8 @@ from token_obsession.services.dexscreener import (
     DexScreenerClient,
     DexScreenerClientError,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class SellEvaluationService:
@@ -49,12 +52,23 @@ class SellEvaluationService:
             position for position in positions if position.status == PositionStatus.OPEN
         ]
         if not open_positions:
+            logger.info("SELL EVALUATION SKIPPED | reason=no_open_positions")
             return SellEvaluationReport(config=config, positions=[])
 
         token_addresses = [position.token_address for position in open_positions]
+        logger.info(
+            "DEX SCREENER LOOKUP STARTED | token_count=%d | tokens=%s",
+            len(open_positions),
+            ",".join(position.symbol for position in open_positions),
+        )
         try:
             pairs = self._dex_client.get_token_pairs("base", token_addresses)
-        except DexScreenerClientError:
+        except DexScreenerClientError as exc:
+            logger.error(
+                "DEX SCREENER LOOKUP FAILED | token_count=%d | error=%s",
+                len(open_positions),
+                exc,
+            )
             evaluations = [
                 self._no_data_evaluation(
                     position=position,
@@ -65,7 +79,16 @@ class SellEvaluationService:
             ]
             return SellEvaluationReport(config=config, positions=evaluations)
 
+        logger.info("DEX SCREENER LOOKUP COMPLETED | pair_count=%d", len(pairs))
         best_pairs = self._best_pairs_by_token(pairs)
+        matched_token_count = sum(
+            token_address.lower() in best_pairs for token_address in token_addresses
+        )
+        logger.info(
+            "PAIR SELECTION COMPLETED | matched_tokens=%d | missing_tokens=%d",
+            matched_token_count,
+            len(open_positions) - matched_token_count,
+        )
         evaluations = [
             self._evaluate_position(
                 position=position,

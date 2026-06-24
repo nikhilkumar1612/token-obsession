@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -10,6 +11,8 @@ from eth_utils import is_address
 
 from token_obsession.core.config import Settings
 from token_obsession.core.models import PreparedSwapTransaction, SwapQuote
+
+logger = logging.getLogger(__name__)
 
 
 class UniswapClientError(RuntimeError):
@@ -53,12 +56,22 @@ class UniswapClient:
             "x-permit2-disabled": "true",
             "x-universal-router-version": self._router_version,
         }
+        logger.info(
+            "UNISWAP SWAP BUILD STARTED | from_token=%s | to_token=%s | "
+            "from_amount=%d | wallet=%s | slippage_percent=%s",
+            from_token,
+            to_token,
+            from_amount,
+            wallet_address,
+            slippage_percent,
+        )
         with httpx.Client(
             base_url=self._settings.uniswap_base_url,
             headers=headers,
             timeout=self._settings.uniswap_timeout_seconds,
             transport=self._transport,
         ) as client:
+            logger.info("UNISWAP STEP 1/3 | Checking direct ERC-20 approval requirements.")
             approval_payload = self._post(
                 client,
                 "/check_approval",
@@ -72,6 +85,12 @@ class UniswapClient:
                 },
                 operation="approval check",
             )
+            logger.info(
+                "UNISWAP APPROVAL CHECK COMPLETED | reset_required=%s | approval_required=%s",
+                approval_payload.get("cancel") is not None,
+                approval_payload.get("approval") is not None,
+            )
+            logger.info("UNISWAP STEP 2/3 | Requesting best classic V2/V3/V4 route.")
             quote_response = self._post(
                 client,
                 "/quote",
@@ -92,8 +111,21 @@ class UniswapClient:
                 operation="quote",
             )
             quote_payload = self._mapping(quote_response.get("quote"), "quote")
+            output_payload = self._mapping(quote_payload.get("output"), "quote.output")
+            logger.info(
+                "UNISWAP QUOTE COMPLETED | request_id=%s | routing=%s | "
+                "estimated_output=%s | minimum_output=%s",
+                quote_response.get("requestId"),
+                quote_response.get("routing"),
+                output_payload.get("amount"),
+                output_payload.get("minimumAmount"),
+            )
             deadline = datetime.now(UTC) + timedelta(
                 minutes=self._settings.uniswap_swap_deadline_minutes
+            )
+            logger.info(
+                "UNISWAP STEP 3/3 | Building swap calldata | deadline=%s",
+                deadline.isoformat(),
             )
             swap_response = self._post(
                 client,
@@ -109,7 +141,7 @@ class UniswapClient:
                 operation="swap build",
             )
 
-        return self._normalize_quote(
+        quote = self._normalize_quote(
             approval_payload=approval_payload,
             quote_response=quote_response,
             swap_response=swap_response,
@@ -118,6 +150,14 @@ class UniswapClient:
             from_amount=from_amount,
             wallet_address=wallet_address,
         )
+        logger.info(
+            "UNISWAP SWAP BUILD COMPLETED | quote_id=%s | preparation_transactions=%d | "
+            "transaction_target=%s",
+            quote.quote_id,
+            len(quote.preparation_transactions),
+            quote.transaction_to,
+        )
+        return quote
 
     def _normalize_quote(
         self,

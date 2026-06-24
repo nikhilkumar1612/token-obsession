@@ -20,7 +20,7 @@ from token_obsession.services.safe_sell import (
     SafeSellProposalService,
 )
 from token_obsession.services.sell_proposals import SellProposalStore
-from token_obsession.workers.sell_monitor import SellMonitorWorker
+from token_obsession.workers.sell_monitor import SellMonitorWorker, configure_logging
 
 
 class FakeEvaluationService:
@@ -175,3 +175,9 @@ def test_worker_logs_a_prominent_sell_error(tmp_path, caplog) -> None:
     assert report.results[0].status == SellWorkerResultStatus.ERROR
     assert "SELL ACTION REQUIRED" in caplog.text
     assert "quote unavailable" in caplog.text
+
+
+def test_worker_logging_uses_double_newline_terminator() -> None:
+    configure_logging()
+
+    assert logging.getLogger().handlers[0].terminator == "\n\n"
